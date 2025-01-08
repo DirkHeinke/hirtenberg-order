@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menu Counter</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <style>
+        /* Layout */
+        .container {
+            margin-top: 20px;
+            max-width: 900px;
+        }
+
+        /* Components */
+        .day-section {
+            margin-bottom: 15px;
+            padding: 12px;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+        }
+
+        .day-header {
+            margin-bottom: 10px;
+            color: #0d6efd;
+            font-size: 1.1rem;
+        }
+
+        .collapsible-header {
+            cursor: pointer;
+        }
+
+        /* Menu items */
+        .menu-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .menu-grid + .menu-grid {
+            margin-top: 8px;
+        }
+
+        .menu-header {
+            display: grid;
+            grid-template-columns: 1fr 80px;
+            gap: 10px;
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+
+        .menu-item {
+            display: grid;
+            grid-template-columns: 1fr 80px;
+            gap: 10px;
+            align-items: center;
+        }
+
+        /* Form elements */
+        .counter-input {
+            width: 100% !important;
+            padding: 4px 8px !important;
+            height: auto !important;
+        }
+
+        .menu-btn {
+            width: 100% !important;
+            padding: 6px 12px !important;
+            height: auto !important;
+            text-align: left;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .input-group textarea.email-body {
+            width: 100%;
+            min-height: 150px !important;
+            height: 150px !important;
+        }
+
+        /* Compact controls */
+        .controls-section {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+        }
+
+        .custom-menu-input {
+            width: 100%;
+        }
+
+        .add-menu-btn {
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="mb-4">Bestellung</h2>
+        <div id="orderContainer">
+            <!-- Days will be dynamically added here -->
+        </div>
+
+        <div class="mt-3 mb-2">
+            <button class="btn btn-secondary" onclick="OrderUI.toggleAllDays()" id="toggleAllButton">Alle Tage anzeigen</button>
+        </div>
+
+        <div class="mt-3 mb-5">
+            <button class="btn btn-primary" onclick="EmailHandler.sendEmail()">E-Mail senden</button>
+        </div>
+
+        <div class="day-section">
+            <h2 class="mb-4 d-flex justify-content-between align-items-center collapsible-header" 
+                data-bs-toggle="collapse" data-bs-target="#settingsSection">
+                E-Mail
+                <span class="small">▼</span>
+            </h2>
+            
+            <div class="collapse" id="settingsSection">
+                <div class="input-group mb-3">
+                    <span class="input-group-text">Betreff</span>
+                    <input type="text" class="form-control" id="betreff" style="width: auto;">
+                </div>
+
+                <div class="input-group">
+                    <span class="input-group-text">Body</span>
+                    <textarea class="form-control email-body" id="body"></textarea>
+                </div>
+
+                <div class="mt-3">
+                    <button class="btn btn-success" onclick="Storage.save()">Änderungen speichern</button>
+                    <button class="btn btn-danger" onclick="Storage.reset()">Standardwerte zurücksetzen</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Private constants
+        const SELECTORS = {
+            BETREFF: '#betreff',
+            BODY: '#body',
+            ORDER_CONTAINER: '#orderContainer',
+            TOGGLE_BUTTON: '#toggleAllButton',
+            SETTINGS_SECTION: '#settingsSection'
+        };
+
+        const STORAGE_KEYS = {
+            BETREFF: 'betreff',
+            BODY: 'body'
+        };
+
+        // Configuration
+        const CONFIG = {
+            DAYS_TO_SHOW: 7,
+            MENUS_PER_DAY: 3,
+            VISIBLE_DAYS: 2,
+            UI_STRINGS: {
+                SHOW_ALL: 'Alle Tage anzeigen',
+                HIDE_ALL: 'Alle Tage ausblenden',
+                SAVE_SUCCESS: 'Änderungen erfolgreich gespeichert!',
+                RESET_SUCCESS: 'Standardwerte erfolgreich zurückgesetzt!'
+            },
+            DEFAULT_VALUES: {
+                BETREFF: "Bestellung XXX",
+                BODY: `Hallo,
+
+wir würden gerne folgendes bestellen:
+[ORDER]
+
+Lieferung an: XXX
+
+Mit freundlichen Grüßen
+XXX`
+            }
+        };
+
+        // Initialize the default values in the HTML
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelector(SELECTORS.BETREFF).value = CONFIG.DEFAULT_VALUES.BETREFF;
+            document.querySelector(SELECTORS.BODY).value = CONFIG.DEFAULT_VALUES.BODY;
+        });
+
+        // Date handling
+        const DateFormatter = {
+            format(date) {
+                const day = date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+                const weekday = date.toLocaleDateString('de-DE', { weekday: 'long' });
+                return `${day} - ${weekday}`;
+            },
+
+            getDaysFromToday(daysToAdd) {
+                const now = new Date();
+                const currentHour = now.getHours();
+                const currentMinutes = now.getMinutes();
+                
+                // If it's after 9:30, start from tomorrow
+                let startDate = new Date();
+                if (currentHour > 9 || (currentHour === 9 && currentMinutes >= 30)) {
+                    startDate.setDate(startDate.getDate() + 1);
+                }
+                
+                startDate.setDate(startDate.getDate() + daysToAdd);
+                return startDate;
+            }
+        };
+
+        // UI Components
+        const OrderUI = {
+            createDaySection(date, dayIndex) {
+                const section = document.createElement('div');
+                section.className = 'day-section';
+                
+                const header = this.createHeader(date, dayIndex);
+                const content = this.createContent(dayIndex);
+                
+                section.appendChild(header);
+                section.appendChild(content);
+                return section;
+            },
+
+            createHeader(date, dayIndex) {
+                const header = document.createElement('h4');
+                header.className = 'day-header';
+                
+                if (dayIndex < CONFIG.VISIBLE_DAYS) {
+                    header.textContent = DateFormatter.format(date);
+                } else {
+                    header.innerHTML = `
+                        <div class="d-flex justify-content-between align-items-center collapsible-header" 
+                             data-bs-toggle="collapse" data-bs-target="#day${dayIndex}">
+                            ${DateFormatter.format(date)}
+                            <span class="small">▼</span>
+                        </div>`;
+                }
+                return header;
+            },
+
+            createContent(dayIndex) {
+                const contentDiv = document.createElement('div');
+                contentDiv.className = dayIndex < CONFIG.VISIBLE_DAYS ? 'show' : 'collapse';
+                if (dayIndex >= CONFIG.VISIBLE_DAYS) contentDiv.id = `day${dayIndex}`;
+                
+                contentDiv.appendChild(this.createTable(dayIndex));
+                return contentDiv;
+            },
+
+            createTable(dayIndex) {
+                const container = document.createElement('div');
+                
+                // Add header
+                const header = document.createElement('div');
+                header.className = 'menu-header';
+                header.innerHTML = `
+                    <div>Menü</div>
+                    <div>Anzahl</div>
+                `;
+                container.appendChild(header);
+
+                // Menu grid
+                const menuGrid = document.createElement('div');
+                menuGrid.className = 'menu-grid';
+                
+                // Standard menu items
+                for(let i = 0; i < CONFIG.MENUS_PER_DAY; i++) {
+                    const menuItem = document.createElement('div');
+                    menuItem.className = 'menu-item';
+                    menuItem.innerHTML = `
+                        <button class="btn btn-primary menu-btn" onclick="OrderUI.incrementCounter(${dayIndex}, ${i})">Menü ${i + 1}</button>
+                        <input type="number" id="counter_${dayIndex}_${i}" value="" class="form-control counter-input">
+                    `;
+                    menuGrid.appendChild(menuItem);
+                }
+
+                // Custom menu section
+                const customSection = document.createElement('div');
+                customSection.id = `tableBody_${dayIndex}`;
+                customSection.className = 'menu-grid';
+
+                // Initial custom menu row
+                const customRow = document.createElement('div');
+                customRow.className = 'menu-item custom-menu-row';
+                customRow.innerHTML = `
+                    <input type="text" id="custom_menu_${dayIndex}_0" class="form-control custom-menu-input" placeholder="Anderes Menü">
+                    <input type="number" id="custom_counter_${dayIndex}_0" value="" class="form-control counter-input">
+                `;
+                customSection.appendChild(customRow);
+
+                const addButton = document.createElement('button');
+                addButton.className = 'btn btn-secondary btn-sm add-menu-btn';
+                addButton.textContent = 'Menü hinzufügen';
+                addButton.onclick = () => this.addCustomMenuRow(dayIndex);
+
+                container.appendChild(menuGrid);
+                container.appendChild(customSection);
+                container.appendChild(addButton);
+                return container;
+            },
+
+            addCustomMenuRow(dayIndex) {
+                const tbody = document.getElementById(`tableBody_${dayIndex}`);
+                const existingCustomRows = tbody.getElementsByClassName('custom-menu-row').length;
+                const newRowIndex = existingCustomRows;
+
+                const newRow = document.createElement('tr');
+                newRow.className = 'custom-menu-row';
+                newRow.innerHTML = `
+                    <td>
+                        <input type="text" id="custom_menu_${dayIndex}_${newRowIndex}" class="form-control custom-menu-input" placeholder="Anderes Menü">
+                    </td>
+                    <td>
+                        <input type="number" id="custom_counter_${dayIndex}_${newRowIndex}" value="" class="form-control counter-input">
+                    </td>
+                `;
+                tbody.appendChild(newRow);
+            },
+
+            incrementCounter(dayIndex, menuIndex) {
+                const input = document.getElementById(`counter_${dayIndex}_${menuIndex}`);
+                const currentValue = input.value === '' ? 0 : parseInt(input.value);
+                input.value = currentValue + 1;
+            },
+
+            toggleAllDays() {
+                const button = document.querySelector(SELECTORS.TOGGLE_BUTTON);
+                const allCollapsible = document.querySelectorAll('.collapse');
+                const isShowingAll = button.textContent === CONFIG.UI_STRINGS.HIDE_ALL;
+                
+                allCollapsible.forEach(element => {
+                    if (isShowingAll) {
+                        element.classList.remove('show');
+                    } else {
+                        element.classList.add('show');
+                    }
+                });
+                
+                button.textContent = isShowingAll ? CONFIG.UI_STRINGS.SHOW_ALL : CONFIG.UI_STRINGS.HIDE_ALL;
+            },
+
+            initialize() {
+                const container = document.querySelector(SELECTORS.ORDER_CONTAINER);
+                container.innerHTML = '';
+                
+                for(let i = 0; i < CONFIG.DAYS_TO_SHOW; i++) {
+                    const date = DateFormatter.getDaysFromToday(i);
+                    container.appendChild(this.createDaySection(date, i));
+                }
+            }
+        };
+
+        // Order handling
+        const OrderHandler = {
+            generateOrderText() {
+                let orderText = [];
+                
+                for(let day = 0; day < CONFIG.DAYS_TO_SHOW; day++) {
+                    const date = DateFormatter.getDaysFromToday(day);
+                    let dayOrders = [];
+                    
+                    for(let menu = 0; menu < CONFIG.MENUS_PER_DAY; menu++) {
+                        const value = document.getElementById(`counter_${day}_${menu}`).value;
+                        const count = value === '' ? 0 : parseInt(value);
+                        if(count > 0) {
+                            dayOrders.push(`${count}x: Menü ${menu + 1}`);
+                        }
+                    }
+
+                    // Add all custom menus
+                    const tbody = document.getElementById(`tableBody_${day}`);
+                    const customRows = tbody.getElementsByClassName('custom-menu-row');
+                    for(let i = 0; i < customRows.length; i++) {
+                        const customMenu = document.getElementById(`custom_menu_${day}_${i}`).value.trim();
+                        const value = document.getElementById(`custom_counter_${day}_${i}`).value;
+                        const customCount = value === '' ? 0 : parseInt(value);
+                        if(customMenu && customCount > 0) {
+                            dayOrders.push(`${customCount}x: ${customMenu}`);
+                        }
+                    }
+                    
+                    if(dayOrders.length > 0) {
+                        orderText.push(`${DateFormatter.format(date)}:\n${dayOrders.join('\n')}`);
+                    }
+                }
+                
+                return orderText.join('\n\n');
+            }
+        };
+
+        // Email handling
+        const EmailHandler = {
+            sendEmail() {
+                const betreff = document.querySelector(SELECTORS.BETREFF).value;
+                let body = document.querySelector(SELECTORS.BODY).value;
+                
+                const orderText = OrderHandler.generateOrderText();
+                body = body.replace('[ORDER]', orderText);
+                
+                const mailtoLink = `mailto:gzh-groteloh@gmx.de?subject=${encodeURIComponent(betreff)}&body=${encodeURIComponent(body)}`;
+                window.location.href = mailtoLink;
+            }
+        };
+
+        // Storage handling
+        const Storage = {
+            save() {
+                const betreff = document.querySelector(SELECTORS.BETREFF).value;
+                const body = document.querySelector(SELECTORS.BODY).value;
+                
+                localStorage.setItem(STORAGE_KEYS.BETREFF, betreff);
+                localStorage.setItem(STORAGE_KEYS.BODY, body);
+
+                alert(CONFIG.UI_STRINGS.SAVE_SUCCESS);
+            },
+
+            reset() {
+                localStorage.clear();
+                document.querySelector(SELECTORS.BETREFF).value = CONFIG.DEFAULT_VALUES.BETREFF;
+                document.querySelector(SELECTORS.BODY).value = CONFIG.DEFAULT_VALUES.BODY;
+                
+                for(let day = 0; day < CONFIG.DAYS_TO_SHOW; day++) {
+                    for(let menu = 0; menu < CONFIG.MENUS_PER_DAY; menu++) {
+                        document.getElementById(`counter_${day}_${menu}`).value = '';
+                    }
+                }
+                
+                alert(CONFIG.UI_STRINGS.RESET_SUCCESS);
+            },
+
+            load() {
+                const savedBetreff = localStorage.getItem(STORAGE_KEYS.BETREFF);
+                const savedBody = localStorage.getItem(STORAGE_KEYS.BODY);
+                
+                if (savedBetreff) document.querySelector(SELECTORS.BETREFF).value = savedBetreff;
+                if (savedBody) document.querySelector(SELECTORS.BODY).value = savedBody;
+            }
+        };
+
+        // Initialize application
+        window.onload = function() {
+            OrderUI.initialize();
+            Storage.load();
+        };
+    </script>
+</body>
+</html> 
