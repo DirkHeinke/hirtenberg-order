@@ -6,11 +6,13 @@
     <title>Menu Counter</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <script src="weeks.js"></script>
     <style>
         /* Layout */
         .container {
             margin-top: 20px;
-            max-width: 900px;
+            max-width: 1100px;
         }
 
         /* Components */
@@ -29,6 +31,60 @@
 
         .collapsible-header {
             cursor: pointer;
+        }
+
+        /* Two-column layout: menu buttons + day preview */
+        .day-body {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 16px;
+            align-items: start;
+        }
+
+        @media (max-width: 768px) {
+            .day-body {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .day-preview {
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 8px;
+            background: #f8f9fa;
+            min-height: 120px;
+        }
+
+        .day-preview img {
+            max-width: 100%;
+            max-height: 260px;
+            width: auto;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+            cursor: zoom-in;
+            border-radius: 4px;
+        }
+
+        .day-preview .preview-meta {
+            font-size: 0.85rem;
+            color: #6c757d;
+            margin-top: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .day-preview .preview-status {
+            color: #6c757d;
+            font-size: 0.9rem;
+            text-align: center;
+            padding: 12px;
+        }
+
+        .day-preview .preview-status.error {
+            color: #b02a37;
         }
 
         /* Menu items */
@@ -207,6 +263,108 @@ XXX`
             }
         };
 
+        // ISO weekday: Mo=1 .. So=7
+        function isoWeekday(date) {
+            return ((date.getDay() + 6) % 7) + 1;
+        }
+
+        function mondayISO(date) {
+            const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+            const offset = (d.getDay() + 6) % 7;
+            d.setDate(d.getDate() - offset);
+            const yyyy = d.getFullYear();
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
+        }
+
+        function findWeekForDate(date) {
+            const data = window.HIRTENBERG_WEEKS;
+            if (!data || !Array.isArray(data.weeks)) return null;
+            const monday = mondayISO(date);
+            return data.weeks.find(w => w.monday === monday) || null;
+        }
+
+        // PDF.js: pro Wochenplan einmal rendern, pro Tag zuschneiden
+        const PdfPreview = {
+            cache: new Map(), // url -> Promise<HTMLCanvasElement>
+
+            // Pixel-Anteile (0..1) im Original-PDF (1600×1131-Render gemessen).
+            // Spaltentrenner: 22, 68, 264, 460, 656, 852, 1048, 1244, 1440, 1550.
+            // Horizontale Trenner: Tageskopf bei y≈223, Menü III endet bei y≈752,
+            // danach folgt die Spezialmenü-Zeile (abgeschnitten).
+            layout: {
+                topRatio: 0.197,
+                bottomRatio: 0.665,
+                labelLeftRatio: 0.01375,
+                labelWidthRatio: 0.02875,
+                dayStartRatios: [0.0425, 0.165, 0.2875, 0.41, 0.5325, 0.655, 0.7775],
+                dayWidthRatio: 0.1225
+            },
+
+            ready() {
+                return typeof window.pdfjsLib !== 'undefined';
+            },
+
+            ensureWorker() {
+                if (!this._workerSet && this.ready()) {
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+                        'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+                    this._workerSet = true;
+                }
+            },
+
+            loadPdf(url) {
+                if (!this.ready()) {
+                    return Promise.reject(new Error('PDF.js nicht geladen'));
+                }
+                this.ensureWorker();
+                if (!this.cache.has(url)) {
+                    this.cache.set(url, this._renderPage1(url).catch(err => {
+                        this.cache.delete(url); // beim nächsten Versuch erneut
+                        throw err;
+                    }));
+                }
+                return this.cache.get(url);
+            },
+
+            async _renderPage1(url) {
+                const pdf = await window.pdfjsLib.getDocument({ url }).promise;
+                const page = await pdf.getPage(1);
+                const scale = 2;
+                const viewport = page.getViewport({ scale });
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                return canvas;
+            },
+
+            cropDay(sourceCanvas, weekday) {
+                if (weekday < 1 || weekday > 7) return null;
+                const L = this.layout;
+                const W = sourceCanvas.width;
+                const H = sourceCanvas.height;
+
+                const top = Math.floor(H * L.topRatio);
+                const bottom = Math.floor(H * L.bottomRatio);
+                const height = bottom - top;
+
+                const labelStart = Math.floor(W * L.labelLeftRatio);
+                const labelWidth = Math.floor(W * L.labelWidthRatio);
+                const dayStart = Math.floor(W * L.dayStartRatios[weekday - 1]);
+                const dayWidth = Math.floor(W * L.dayWidthRatio);
+
+                const out = document.createElement('canvas');
+                out.width = labelWidth + dayWidth;
+                out.height = height;
+                const ctx = out.getContext('2d');
+                ctx.drawImage(sourceCanvas, labelStart, top, labelWidth, height, 0, 0, labelWidth, height);
+                ctx.drawImage(sourceCanvas, dayStart, top, dayWidth, height, labelWidth, 0, dayWidth, height);
+                return out;
+            }
+        };
+
         // UI Components
         const OrderUI = {
             createDaySection(date, dayIndex) {
@@ -214,7 +372,7 @@ XXX`
                 section.className = 'day-section';
                 
                 const header = this.createHeader(date, dayIndex);
-                const content = this.createContent(dayIndex);
+                const content = this.createContent(date, dayIndex);
                 
                 section.appendChild(header);
                 section.appendChild(content);
@@ -238,13 +396,83 @@ XXX`
                 return header;
             },
 
-            createContent(dayIndex) {
+            createContent(date, dayIndex) {
                 const contentDiv = document.createElement('div');
-                contentDiv.className = dayIndex < CONFIG.VISIBLE_DAYS ? 'show' : 'collapse';
-                if (dayIndex >= CONFIG.VISIBLE_DAYS) contentDiv.id = `day${dayIndex}`;
-                
-                contentDiv.appendChild(this.createTable(dayIndex));
+                const isCollapsed = dayIndex >= CONFIG.VISIBLE_DAYS;
+                contentDiv.className = isCollapsed ? 'collapse' : 'show';
+                if (isCollapsed) contentDiv.id = `day${dayIndex}`;
+
+                const body = document.createElement('div');
+                body.className = 'day-body';
+                body.appendChild(this.createTable(dayIndex));
+                body.appendChild(this.createDayPreview(date, dayIndex, isCollapsed));
+                contentDiv.appendChild(body);
                 return contentDiv;
+            },
+
+            createDayPreview(date, dayIndex, isCollapsed) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'day-preview';
+
+                const week = findWeekForDate(date);
+                const weekday = isoWeekday(date);
+
+                if (!week) {
+                    wrapper.innerHTML = `
+                        <div class="preview-status">
+                            Kein Wochenplan für diesen Tag verfügbar.<br>
+                            <a href="https://www.zum-hirtenberg.de/general-5" target="_blank" rel="noopener">Auf zum-hirtenberg.de öffnen</a>
+                        </div>`;
+                    return wrapper;
+                }
+
+                const status = document.createElement('div');
+                status.className = 'preview-status';
+                status.textContent = 'Vorschau wird geladen …';
+                wrapper.appendChild(status);
+
+                const meta = document.createElement('div');
+                meta.className = 'preview-meta';
+                meta.innerHTML = `<span>KW ${week.kw}</span><a href="${week.url}" target="_blank" rel="noopener">Ganzer Plan ↗</a>`;
+                wrapper.appendChild(meta);
+
+                const render = () => {
+                    if (wrapper.dataset.rendered === '1') return;
+                    wrapper.dataset.rendered = '1';
+                    PdfPreview.loadPdf(week.url)
+                        .then(canvas => {
+                            const dayCanvas = PdfPreview.cropDay(canvas, weekday);
+                            if (!dayCanvas) {
+                                status.textContent = 'Dieser Tag ist im Plan nicht enthalten.';
+                                return;
+                            }
+                            const img = document.createElement('img');
+                            img.alt = `Speiseplan ${DateFormatter.format(date)}`;
+                            img.src = dayCanvas.toDataURL('image/png');
+                            img.addEventListener('click', () => window.open(week.url, '_blank', 'noopener'));
+                            status.replaceWith(img);
+                        })
+                        .catch(err => {
+                            console.error('PDF-Vorschau fehlgeschlagen', err);
+                            status.classList.add('error');
+                            status.innerHTML = `Vorschau konnte nicht geladen werden.<br><a href="${week.url}" target="_blank" rel="noopener">PDF direkt öffnen</a>`;
+                        });
+                };
+
+                if (!isCollapsed) {
+                    // Sofort rendern, sobald PDF.js und Daten verfügbar sind.
+                    setTimeout(render, 0);
+                } else {
+                    // Lazy: erst rendern, wenn die Karte aufgeklappt wird.
+                    const collapseEl = wrapper.closest('.collapse');
+                    if (collapseEl) {
+                        collapseEl.addEventListener('shown.bs.collapse', render, { once: true });
+                    } else {
+                        setTimeout(render, 0);
+                    }
+                }
+
+                return wrapper;
             },
 
             createTable(dayIndex) {
